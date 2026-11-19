@@ -56,13 +56,19 @@ export function makeWorld(seed: number, tc = 59.5, tT = 168): World {
   for (let i = 0; i < 26; i++) add(`Side ${i}`, 'bronze', logU(r, 0.3, 120) * storyScale, logU(r, 0.03, 0.95), r() < 0.4);
   for (let i = 0; i < 12; i++) add(`Grind ${i}`, 'silver', logU(r, 40, 300) * storyScale, logU(r, 0.05, 0.6), false);
   add('Completion', 'gold', 230 * storyScale, 0.3, false);
+  // the real page's wording for the story chain and the completionist trophy
+  for (const t of trophies) {
+    const m = /^Chapter (\d)$/.exec(t.name);
+    if (m) t.description = m[1] === '5' ? 'Complete the final mission.' : `Complete Chapter ${m[1]}.`;
+    if (t.name === 'Completion') t.description = 'Attain 100% Completion.';
+  }
   // earn times
   const earn: number[][] = trophies.map((_, k) => {
     const ts: number[] = [];
     for (let i = 0; i < players; i++) {
       if (r() > att[k]) continue;
       const need = reqH[k] * Math.exp(0.35 * skill[i] + 0.25 * gauss(r));
-      const wall = need / speed[i];
+      const wall = k === 1 ? 0 : need / speed[i]; // Exophase counts a player once they hold a trophy: the first one
       if (wall > quit[i]) continue;
       // play happens in the evening: snap to a session boundary
       const t = arrive[i] + wall * (1 + 0.15 * Math.sin((2 * Math.PI * (arrive[i] + wall - phase)) / 24));
@@ -80,9 +86,9 @@ export function makeWorld(seed: number, tc = 59.5, tT = 168): World {
     const N = base + n * scale;
     return { n: Math.round(N), rates: trophies.map((_, k) => round2(Math.min(100, (100 * (baseCount[k] + countBefore(earn[k], t) * scale)) / N))) };
   };
-  // refresh clock: irregular, 0.5..5h apart, first one at 4.5h
+  // refresh clock: irregular and slow (live page sat unchanged 14:00..18:30 UTC on launch day), first one at 4.5h
   const refreshes: number[] = [];
-  const gapMean = logU(r, 0.4, 3);
+  const gapMean = process.env.FASTREFRESH ? logU(r, 0.4, 3) : logU(r, 2, 20);
   for (let t = 4.5; t < tT + 2; t += gapMean * (0.3 + 1.4 * r())) refreshes.push(t);
   const history: Read[] = [];
   const read = (slotH: number): { n: number; rates: number[] } => {
@@ -156,4 +162,4 @@ function main(): void {
   console.log(`worlds ${worlds}: mine ${(tot.mine / worlds).toFixed(4)}  persistence ${(tot.pers / worlds).toFixed(4)}  curve ${(tot.curve / worlds).toFixed(4)}  cov90 ${(cov / n).toFixed(3)}`);
 }
 
-if (import.meta.url.endsWith(process.argv[1]?.replace(/\\/g, '/').split('/').pop() ?? '')) main();
+if ((process.argv[1] ?? '').split('\\').join('/').endsWith('lab/sim.ts')) main();

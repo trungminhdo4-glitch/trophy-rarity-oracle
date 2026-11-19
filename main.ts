@@ -36,6 +36,11 @@ export const P = {
   kernel0: 0.12,        // model-error kernel on the logit scale, at zero predicted move
   kernelMove: 0.30,     // ... plus this share of the predicted logit move
   kernelHorizon: 0.10,  // ... plus this per log-ratio of target to checkpoint time
+  chapterLogitP: 1.5,   // prior logit of the share that ever completes a story chapter
+  storySd: 1.2,
+  completionHours: 150, // soft floor on the median wait for the platinum / 100% completion
+  lastFull: 1,          // weight of the latest read's likelihood (1 = untempered; 0 = tempered like the rest)
+  staleShare: 0,      // share of the median refresh gap the answering read lags the target
   decayWeights: [0.25, 0.5, 0.25],
   decayMult: [0.65, 1.0, 1.35],
 };
@@ -114,8 +119,14 @@ function futureArrivals(snaps: Snap[], tc: number, tT: number): Array<Array<[num
 export function forecast(c: Case): Row[] {
   const t0 = Date.parse(`${c.game?.release_date ?? '2026-11-19'}T00:00:00Z`);
   const tc = (Date.parse(c.at) - t0) / 3_600_000;
-  const tT = (Date.parse(c.target) - t0) / 3_600_000;
+  const tTrue = (Date.parse(c.target) - t0) / 3_600_000;
   const snaps = snapshots(c, t0);
+  // The answering read shows Exophase's last refresh before the target, on average about half a refresh gap old.
+  const gaps: number[] = [];
+  for (let j = 2; j < snaps.length; j++) gaps.push(snaps[j].t - snaps[j - 1].t);
+  gaps.sort((a, b) => a - b);
+  const gap = gaps.length > 0 ? gaps[Math.floor(gaps.length / 2)] : 6;
+  const tT = Math.max(tc, tTrue - P.staleShare * Math.min(gap, 36));
   const K = c.trophies.length;
   const base = snaps[0];
   // Arrival batches after the first snapshot.
@@ -150,25 +161,37 @@ export function forecast(c: Case): Row[] {
   for (let k = 0; k < K; k++) {
     const t = c.trophies[k];
     const lastRate = lastKnown(snaps, k);
+    if (lastRate >= 99.9) {
+      // Everyone gets it on starting (the first trophy): the page sits at the scorer's 99.99 cap.
+      rows.push({ id: t.id, q: [99.96, 99.99, 99.99, 99.99, 99.99] });
+      continue;
+    }
     const c0 = ((base.rates[k] ?? 0) * base.n) / 100;
     const ks: number[] = [];
     for (let i = 0; i < obs.length; i++) if (obs[i].rates[k] !== null && obs[i].rates[k] !== undefined) ks.push(i);
     const tw = temperFor(ks.length);
+    const pr = priorFor(t);
     // Log weights of every grid point, and its predicted target logit per scenario.
     const comps: Array<{ lw: number; l: number }> = [];
     for (const g of grid) {
       for (const pl of PL) {
         const p = 1 / (1 + Math.exp(-pl));
         let ll = 0;
+        let lastLl = 0;
         for (const i of ks) {
           const o = obs[i];
           const m = c0 + p * g.reach[i];
           const y = ((o.rates[k] as number) * o.n) / 100;
           const q = (0.01 * o.n) / 100; // the page's rounding step in earners
           const v = P.overdisp * Math.max(m, 1) + (q * q) / 12 + (P.relErr * m) ** 2 + 0.25;
-          ll += -0.5 * ((y - m) ** 2 / v) - 0.5 * Math.log(v);
+          const li = -0.5 * ((y - m) ** 2 / v) - 0.5 * Math.log(v);
+          ll += li;
+          if (i === ks[ks.length - 1]) lastLl = li;
         }
-        const prior = -0.5 * ((pl - 0.5) / 3) ** 2;
+        // The tempered history sets the curve's shape; the latest read pins its level at full weight.
+        ll = ll + (P.lastFull / Math.max(tw, 1e-9) - 1) * lastLl;
+        const prior = pr.pMean === null ? -0.5 * ((pl - 0.5) / 3) ** 2 : -0.5 * ((pl - pr.pMean) / pr.pSd) ** 2
+          + (pr.muMin > 0 && g.mu < pr.muMin ? -0.5 * ((pr.muMin - g.mu) / 0.5) ** 2 : 0);
         const lw = tw * ll + prior;
         for (let sc = 0; sc < fut.length; sc++) {
           const rate = (100 * (c0 + p * g.reachT[sc])) / nT[sc];
@@ -179,6 +202,19 @@ export function forecast(c: Case): Row[] {
     rows.push({ id: t.id, q: mixtureQuantiles(comps, logitPct(lastRate), kernelBase) });
   }
   return rows;
+}
+
+/**
+ * What the trophy's wording says before any data: story chapters are earned by most players who keep playing
+ * (high p), the main ending by a majority, and the platinum / 100% completion only after a very long grind.
+ * pMean null keeps the broad default; muMin is a soft floor on the log median wait in hours.
+ */
+function priorFor(t: Trophy): { pMean: number | null; pSd: number; muMin: number } {
+  const text = `${t.name} ${t.description}`;
+  if (t.tier === 'platinum' || /100% completion/i.test(text)) return { pMean: null, pSd: 3, muMin: Math.log(P.completionHours) };
+  if (/complete chapter \d|^chapter \d/i.test(text)) return { pMean: P.chapterLogitP, pSd: P.storySd, muMin: 0 };
+  if (/complete the final mission\.$/i.test(t.description)) return { pMean: P.chapterLogitP - 1, pSd: P.storySd, muMin: 0 };
+  return { pMean: null, pSd: 3, muMin: 0 };
 }
 
 function lastKnown(snaps: Snap[], k: number): number {
