@@ -30,9 +30,9 @@ export interface Row { id: number; q: number[] }
 /** Tunable knobs (the lab's simulator calibrates them). */
 export const P = {
   lagHours: 1.0,        // hours a fresh player has already played when Exophase first counts them
-  temper: 12,           // effective number of independent observations per trophy
-  relErr: 0.06,         // relative model error on the count scale
-  overdisp: 2.0,        // count noise variance per expected earner
+  temper: 3,            // effective number of independent observations per trophy (sim sweep: 2..4 best)
+  relErr: 0.04,         // relative model error on the count scale
+  overdisp: 4.0,        // count noise variance per expected earner
   kernel0: 0.12,        // model-error kernel on the logit scale, at zero predicted move
   kernelMove: 0.30,     // ... plus this share of the predicted logit move
   kernelHorizon: 0.10,  // ... plus this per log-ratio of target to checkpoint time
